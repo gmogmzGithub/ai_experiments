@@ -32,6 +32,7 @@ db = client['Isabella_Conversations']
 
 # Choose a collection in your database
 conversations = db["conversations"]
+# TODO - Make that the conversation go into the MongoDB to keep a history
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
