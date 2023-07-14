@@ -10,6 +10,7 @@ from langchain.document_loaders import TextLoader, PyPDFLoader
 from langchain.vectorstores import FAISS
 from langchain.prompts.prompt import PromptTemplate
 import logging
+from pypdf.errors import PdfStreamError
 from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv())
@@ -31,41 +32,47 @@ logger.setLevel(logging_level)
 vectors_db = os.path.join(embeddings_dir, os.getenv('VECTORS'))
 datasets = os.getenv('DATASETS')
 
-# Load TXT files
-# txt_loader = TextLoader(file_path=datasets, encoding="utf-8")
-# txt_documents = txt_loader.load()
-
 # Load PDF files
 documents = []
 # Iterate over the files in the directory
-for filename in os.listdir(datasets):
-    # Check if the file is a PDF
-    if filename.endswith(".pdf"):
-        # Create a full file path
-        file_path = os.path.join(datasets, filename)
-        # Create a PyPDFLoader for the file
-        loader = PyPDFLoader(file_path=file_path)
-        # Load the document and add it to the list
-        document_pages = loader.load()
-        # Flatten the list of lists
-        documents.extend(document_pages)
+for dirpath, dirnames, filenames in os.walk(datasets):
+    for filename in filenames:
+        # Check if the file is a PDF
+        if filename.endswith(".pdf"):
+            # Create a full file path
+            file_path = os.path.join(dirpath, filename)
+            # Create a PyPDFLoader for the file
+            loader = PyPDFLoader(file_path=file_path)
+            try:
+                # Load the document and add it to the list
+                document_pages = loader.load()
+                # Flatten the list of lists
+                documents.extend(document_pages)
+            except PdfStreamError:
+                logger.error(f"Corrupted or invalid PDF: {file_path}")
+                continue
 
 logger.debug(f"{len(documents)} documents loaded")
 
-if not os.path.exists(vectors_db):
-    logger.debug("Vectors do not exist, we will create them")
-    embeddings = OpenAIEmbeddings()
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=100,
-        length_function=len,
-    )
-    documents = text_splitter.split_documents(documents)
-    vectors = FAISS.from_documents(documents, embeddings)
+if not os.path.exists(embeddings_dir):
+    os.makedirs(embeddings_dir)
 
-    # Save FAISS index
-    with open(vectors_db, 'wb') as f:
-        pickle.dump(vectors, f)
+if not os.path.exists(vectors_db):
+    with st.spinner('Creating vectors...'):
+        logger.info("Creating vectors...")
+        logger.debug("Vectors do not exist, we will create them")
+        embeddings = OpenAIEmbeddings()
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=100,
+            length_function=len,
+        )
+        documents = text_splitter.split_documents(documents)
+        vectors = FAISS.from_documents(documents, embeddings)
+
+        # Save FAISS index
+        with open(vectors_db, 'wb') as f:
+            pickle.dump(vectors, f)
         logger.info('FAISS index created')
 
 else:

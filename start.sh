@@ -10,4 +10,4 @@ pip install -r requirements.txt
 pip install streamlit --upgrade
 
 # Step 3: Run the Streamlit app
-streamlit run src/Home.py --server.port 8502
+streamlit run Ana-Paula.py
