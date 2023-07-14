@@ -154,6 +154,10 @@ cython_debug/
 
 #venv
 
+#FILES
 *.pkl
 *.csv
-
+*.pdf
+*.zip
+datasets/
+embeddings/

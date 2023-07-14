@@ -1,9 +1,9 @@
-# Isabella-chatbot 🤖
+# Ana Paula (Licenciada en Derecho AI Bot) 🤖
 
 
 ### An AI chatbot featuring conversational memory, designed to enable users to discuss their CSV, PDF, TXT data and YTB videos in a more intuitive manner. 🚀
-![Isabella](robby-pic.png)
-Isabella the Wedding Planner [Change this](https://youtu.be/bflfQN_YsTM)
+![Ana Paula](robby-pic.png)
+Ana Paula, asistente legal AI experta en contratos y leyes
 
 ## Running Locally 💻
 ### Prerequisites
