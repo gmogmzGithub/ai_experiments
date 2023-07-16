@@ -1,23 +1,29 @@
+#%%
 import streamlit as st
 import os
+import pinecone
 from streamlit_chat import message
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
-import pickle
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.document_loaders import TextLoader, PyPDFLoader
-from langchain.vectorstores import FAISS
 from langchain.prompts.prompt import PromptTemplate
+from langchain.vectorstores import Pinecone
 import logging
 from pypdf.errors import PdfStreamError
 from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv())
 
-user_api_key = os.environ["OPENAI_API_KEY"]
+openai_key = os.environ["OPENAI_API_KEY"]
 embeddings_dir = os.getenv("EMBEDDINGS")
 logging_level = os.getenv('LOGGING_LEVEL')
+pinecone_api_key = os.getenv('PINECONE_API_KEY')
+pinecone_env = os.getenv('PINECONE_ENV')
+index_name = os.getenv('PINECONE_INDEX')
+datasets = os.getenv('DATASETS')
+model = os.getenv('CHATGPT_MODEL')
 
 # Convert the string logging level to an integer constant
 logging_level = logging.getLevelName(logging_level)
@@ -28,86 +34,70 @@ logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %
 # Create a logger for this module
 logger = logging.getLogger(__name__)
 logger.setLevel(logging_level)
+pinecone.init(api_key=pinecone_api_key, environment=pinecone_env)
+embeddings = OpenAIEmbeddings()
 
-vectors_db = os.path.join(embeddings_dir, os.getenv('VECTORS'))
-datasets = os.getenv('DATASETS')
-
-# Load PDF files
-documents = []
-# Iterate over the files in the directory
-for dirpath, dirnames, filenames in os.walk(datasets):
-    for filename in filenames:
-        # Check if the file is a PDF
-        if filename.endswith(".pdf"):
-            # Create a full file path
-            file_path = os.path.join(dirpath, filename)
-            # Create a PyPDFLoader for the file
-            loader = PyPDFLoader(file_path=file_path)
-            try:
-                # Load the document and add it to the list
-                document_pages = loader.load()
-                # Flatten the list of lists
-                documents.extend(document_pages)
-            except PdfStreamError:
-                logger.error(f"Corrupted or invalid PDF: {file_path}")
-                continue
-
-logger.debug(f"{len(documents)} documents loaded")
-
-if not os.path.exists(embeddings_dir):
-    os.makedirs(embeddings_dir)
-
-if not os.path.exists(vectors_db):
-    with st.spinner('Creating vectors...'):
-        logger.info("Creating vectors...")
-        logger.debug("Vectors do not exist, we will create them")
-        embeddings = OpenAIEmbeddings()
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000,
-            chunk_overlap=100,
-            length_function=len,
-        )
-        documents = text_splitter.split_documents(documents)
-        vectors = FAISS.from_documents(documents, embeddings)
-
-        # Save FAISS index
-        with open(vectors_db, 'wb') as f:
-            pickle.dump(vectors, f)
-        logger.info('FAISS index created')
-
+if 'ana-paula' in pinecone.list_indexes():
+    logger.info("Loading existent vectors from Pinecone")
+    vectorstore = Pinecone.from_existing_index(index_name, embeddings)
 else:
-    logger.debug("Vectors already exist")
-    with open(vectors_db, 'rb') as f:
-        vectors = pickle.load(f)
-        logger.info('Old FAISS index loaded')
+    logger.info("Creating vectors...")
+    logger.debug("Vectors do not exist, we will create them")
+    pinecone.create_index(index_name, dimension=1536, metric="euclidean")
 
-llm = ChatOpenAI(model_name='gpt-3.5-turbo', temperature=0.0)
+    # Load PDF files
+    documents = []
+    for dirpath, dirnames, filenames in os.walk(datasets):
+        for filename in filenames:
+            if filename.endswith(".pdf"):
+                file_path = os.path.join(dirpath, filename)
+                loader = PyPDFLoader(file_path=file_path)
+                try:
+                    document_pages = loader.load()
+                    documents.extend(document_pages)
+                except PdfStreamError:
+                    logger.error(f"Corrupted or invalid PDF: {file_path}")
+                    continue
 
-retriever = vectors.as_retriever()
+    logger.debug(f"{len(documents)} documents loaded")
 
-qa_template = """You are an AI chatbot designed to function as a professional paralegal, your name is Ana Paula 
-specializing in various areas of Mexican law. You are equipped with a comprehensive vector database of legal documents 
-specific to Mexican law, which serves as your primary reference for answering inquiries. You are capable of handling 
-complex legal language and concepts, but your main task is to simplify these concepts so that anyone, even those 
-without legal knowledge, can understand. 
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=0,
+    )
 
-When faced with complex queries that you cannot handle, you respond professionally, informing the user that a human 
-legal expert will be contacted to address their query. Your tone is primarily formal (70%), with elements of empathy 
-(20%) and friendliness (10%). 
+    documents = text_splitter.split_documents(documents)
+    docsearch = Pinecone.from_documents(documents, embeddings, index_name=index_name)
 
-You adhere to the Mexican law 'LEY FEDERAL DE PROTECCIÓN DE DATOS PERSONALES EN POSESIÓN DE LOS PARTICULARES', 
-ensuring that all data shared in the conversation is protected. You do not keep any record of the data, 
-and every conversation is destroyed when the conversation is closed. 
+    logger.info('Pinecone index created')
 
-While you can provide information based on legal documents and Mexican law, you always clarify that you cannot give 
-legal advice as you are not a licensed attorney. Your services are available to anyone, from ranch owners and college 
-students to experienced lawyers, and you strive to provide clear and understandable explanations of legal documents. 
+retriever = vectorstore.as_retriever(
+    search_type="similarity",
+    search_kwargs={"k": 4})
 
-You are a bilingual Mexican AI, fluent in both Spanish and English. While you can communicate in other languages to 
-accommodate expats or immigrants living in Mexico, all your responses are based on Mexican law. 
+qa_template = """You are an AI chatbot designed to function as a professional paralegal, your name is Ana Paula
+specializing in various areas of Mexican law. You are equipped with a comprehensive vector database of legal documents
+specific to Mexican law, which serves as your primary reference for answering inquiries. You are capable of handling
+complex legal language and concepts, but your main task is to simplify these concepts so that anyone, even those
+without legal knowledge, can understand.
 
-In case of errors or misunderstandings, you acknowledge the limitations of AI and assure the user that you are 
-continually learning and improving. 
+When faced with complex queries that you cannot handle, you respond professionally, informing the user that a human
+legal expert will be contacted to address their query. Your tone is primarily formal (70%), with elements of empathy
+(20%) and friendliness (10%).
+
+You adhere to the Mexican law 'LEY FEDERAL DE PROTECCIÓN DE DATOS PERSONALES EN POSESIÓN DE LOS PARTICULARES',
+ensuring that all data shared in the conversation is protected. You do not keep any record of the data,
+and every conversation is destroyed when the conversation is closed.
+
+While you can provide information based on legal documents and Mexican law, you always clarify that you cannot give
+legal advice as you are not a licensed attorney. Your services are available to anyone, from ranch owners and college
+students to experienced lawyers, and you strive to provide clear and understandable explanations of legal documents.
+
+You are a bilingual Mexican AI, fluent in both Spanish and English. While you can communicate in other languages to
+accommodate expats or immigrants living in Mexico, all your responses are based on Mexican law.
+
+In case of errors or misunderstandings, you acknowledge the limitations of AI and assure the user that you are
+continually learning and improving.
 
 context: {context}
 =========
@@ -115,6 +105,7 @@ question: {question}
 ======
 """
 
+llm = ChatOpenAI(model_name=model, temperature=0.0)
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["context", "question"])
 chain = ConversationalRetrievalChain.from_llm(
     llm=llm,
@@ -127,7 +118,7 @@ chain = ConversationalRetrievalChain.from_llm(
 
 
 def default_prompt():
-    return """Hola, soy la Licenciada en Derecho Ana Paula, tu asistente legal virtual. Estoy aquí para ayudarte a 
+    return """Hola, soy la Licenciada en Derecho Ana Paula, tu asistente legal virtual. Estoy aquí para ayudarte a
     entender documentos legales basados en la ley mexicana. ¿Cómo puedo asistirte hoy? """
 
 
