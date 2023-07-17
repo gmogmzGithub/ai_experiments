@@ -19,3 +19,4 @@ python-dotenv==1.0.0
 InstructorEmbedding==1.0.1
 sentence-transformers==2.2.2
 icecream~=2.1.3
+pycryptodome
