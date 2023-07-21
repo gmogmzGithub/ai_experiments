@@ -10,6 +10,8 @@ from langchain.document_loaders import UnstructuredPDFLoader
 from langchain.prompts.prompt import PromptTemplate
 from langchain.vectorstores import Pinecone
 import logging
+import pickle
+from tqdm import tqdm
 from pypdf.errors import DependencyError, PdfStreamError
 from dotenv import find_dotenv, load_dotenv
 
@@ -48,34 +50,75 @@ def load_dotenv_variables():
     return openai_key, embeddings_dir, pinecone_api_key, pinecone_env, index_name, datasets, model
 
 
-def load_pdf_files(datasets):
-    documents = []
-    for dirpath, dirnames, filenames in os.walk(datasets):
-        for filename in filenames:
-            if filename.endswith(".pdf"):
-                file_path = os.path.join(dirpath, filename)
-                logger.info(f"Loading PDF from file: {file_path}")
-                loader = UnstructuredPDFLoader(file_path)
-                try:
-                    document_pages = loader.load()
-                    documents.extend(document_pages)
-                except PdfStreamError:
-                    logger.error(f"Corrupted or invalid PDF: {file_path}")
-                    os.remove(file_path)  # Delete the file if it's invalid or corrupted
-                    continue
-                except DependencyError:
-                    logger.error(
-                        "PyCryptodome is required for decrypting some PDF files. Please install it by running: pip install pycryptodome")
-                    return []  # Or handle this situation appropriately
-
-    logger.debug(f"{len(documents)} documents loaded")
-
+def load_pdf_files(datasets_dir, documents_limit):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=0,
     )
 
-    return text_splitter.split_documents(documents)
+    pickle_file = datasets_dir + '/documents.pkl'
+    logger.debug(pickle_file)
+
+    if os.path.exists(pickle_file):
+        logger.info(f"Loading documents from pickle file: {pickle_file}")
+        with open(pickle_file, 'rb') as f:
+            return pickle.load(f)
+
+    documents = []
+    temp_documents = []
+
+    # Create a list of all directories in the dataset directory
+    dirs = [d for d in os.listdir(datasets_dir) if os.path.isdir(os.path.join(datasets_dir, d))]
+    dirs = sorted(dirs)  # sort directories in alphabetical order
+
+    # Iterate over all directories
+    for dir in dirs:
+        logger.debug(f"Going over the directory: '{dir}'")
+        dir_path = os.path.join(datasets_dir, dir)
+
+        # Create a list of all PDF files in the directory
+        pdf_files = []
+        for filename in os.listdir(dir_path):
+            if filename.endswith(".pdf"):
+                file_path = os.path.join(dir_path, filename)
+                pdf_files.append(file_path)
+
+        # Then iterate over all PDF files with tqdm progress bar
+        for file_path in tqdm(pdf_files, desc="Loading PDF files", unit="file"):
+            if len(temp_documents) >= documents_limit:  # stop when documents limit is reached
+                logger.debug(f"Breaking out of the loop while on {dir}")
+                break
+            loader = UnstructuredPDFLoader(file_path)
+            try:
+                document_pages = loader.load()
+                documents.extend(document_pages)
+                temp_documents.extend(document_pages)
+                temp_documents = text_splitter.split_documents(temp_documents)
+                percentage = (len(temp_documents) * 100)/documents_limit
+                logger.debug(f"So far... we have loaded {len(temp_documents)} documents out of {documents_limit} capacity of {percentage}%")
+            except PdfStreamError:
+                logger.error(f"Corrupted or invalid PDF: {file_path}")
+                os.remove(file_path)  # Delete the file if it's invalid or corrupted
+                continue
+            except DependencyError:
+                logger.error(
+                    "PyCryptodome is required for decrypting some PDF files. "
+                    "Please install it by running: pip install pycryptodome")
+                return []  # Or handle this situation appropriately
+
+        if len(temp_documents) >= documents_limit:  # stop when documents limit is reached
+            break
+
+    logger.debug(f"{len(documents)} documents loaded")
+
+    documents = text_splitter.split_documents(documents)
+
+    # Save documents to a pickle file
+    logger.info(f"Saving documents to pickle file: {pickle_file}")
+    with open(pickle_file, 'wb') as f:
+        pickle.dump(documents, f)
+
+    return documents
 
 
 def create_or_load_pinecone_index(index_name, embeddings):
@@ -128,14 +171,14 @@ def conversational_chat(query):
 
 
 if __name__ == "__main__":
-    openai_key, embeddings_dir, pinecone_api_key, pinecone_env, index_name, datasets, model = load_dotenv_variables()
+    openai_key, embeddings_dir, pinecone_api_key, pinecone_env, index_name, datasets_dir, model = load_dotenv_variables()
     embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
 
     vectorstore = create_or_load_pinecone_index(index_name, embeddings)
 
     if vectorstore is None:
         logger.info(f"No existing index found. Loading PDFs and creating new index.")
-        documents = load_pdf_files(datasets)
+        documents = load_pdf_files(datasets_dir, 112700)
         logger.info(f"No existing index found. Loading PDFs and creating new index.")
         logger.info(f"{len(documents)} documents to be loaded into Pinecone")
         vectorstore = Pinecone.from_documents(documents, embeddings, index_name=index_name)
